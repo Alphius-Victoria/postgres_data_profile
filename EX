@@ -1,0 +1,77 @@
+-- -- Create the database if not exists
+--             {%- set db_create -%}
+--                {{ create_new_database_if_not_exists(destination_database) }}
+--             {%- endset %}
+--             {% do run_query(db_create, 'postgres') %}  
+
+
+
+--  -- Macro to create a new database if not exists
+-- {%- macro create_new_database_if_not_exists(destination_database) -%}
+--     DO $$
+--     BEGIN
+--         IF NOT EXISTS (
+--             SELECT 1 
+--             FROM pg_database 
+--             WHERE datname = '{{ destination_database }}'
+--         ) THEN
+--             EXECUTE 'CREATE DATABASE {{ destination_database }}';
+--         END IF;
+--     END
+--     $$;
+-- {%- endmacro -%}           
+
+
+
+
+
+
+--     {{ print("Empty column(s) not found. Proceeding with data profiling...") }}
+
+
+--             {%- endfor -%}
+--         {% else %}
+--             {{ print("Execute flag is not active. Skipping data profiling.") }}
+--         {% endif %}
+--     {% endif %}
+
+
+-- -- This select statement is used to temporarily store the data in the table after that, we delete this table using the post hook method 
+-- SELECT 'temp_data_for_creating_the_table' AS temp_column
+
+-- {{ print("End of script.") }}
+{%- for information_schema_data in filtered_information_schema_datas -%}
+
+                {%- set source_table_name = information_schema_data[0] ~ '.' ~ information_schema_data[1] ~ '.' ~ information_schema_data[2] -%}
+                {{"columns:" ~ print(source_table_name)}}
+                {%- set source_columns_query = 'SELECT column_name, data_type FROM information_schema.columns WHERE table_name = %s AND table_schema = %s AND table_catalog = %s' -%}
+                {% set source_columns = run_query(source_columns_query, (information_schema_data[2], information_schema_data[1], information_schema_data[0])) %}
+                {{print(source_columns)}}
+                {%- set chunk_size = 100 -%}
+                {%- set chunk_columns = [] -%}
+                -- This loop is used to iterate the columns inside the table
+                {%- for source_column in source_columns -%}
+                    {%- do chunk_columns.append(source_column) -%}
+                    {%- if loop.index % chunk_size == 0 or loop.last -%}
+                        {%- set data_profile_queries = [] -%}
+                        {%- for chunk_column in chunk_columns -%}
+                            {%- set data_profile_query = do_data_profile(information_schema_data, source_table_name, chunk_column[0], profiled_at) -%}
+                            {%- do data_profile_queries.append(data_profile_query) -%}
+                        {%- endfor -%}
+                        {%- set insert_rows -%}
+                            INSERT INTO "{{ destination_database }}"."{{ destination_schema }}"."{{ destination_table }}" (
+                                {%- for chunk_column in chunk_columns -%}
+                                    "{{ chunk_column[0] }}"
+                                    {% if not loop.last %}, {% endif %}
+                                {%- endfor -%}
+                            )
+                            SELECT
+                                {{- data_profile_queries | join(', ') -}}
+                            FROM "{{ source_table_name }}";
+                        {%- endset %}
+                        {{ insert_rows }}
+                        {% do run_query(insert_rows) %}
+                        {%- set chunk_columns = [] -%}
+                    {%- endif -%}
+                {%- endfor -%}
+            {%- endfor -%}
